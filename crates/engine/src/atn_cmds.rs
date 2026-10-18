@@ -2961,27 +2961,14 @@ const EVENTS: &[Event] = &[
         from: merge_visible_from,
         to: merge_visible_to,
     },
-    // Merge Down records as Merge Layers with one layer targeted.
-    Event {
-        code: "Mrg2",
-        name: "mergeLayersNew",
-        label: "Merge Layers",
-        ids: &["layer.mergeLayers", "layer.mergeDown"],
-        from: |_| none("layer.mergeLayers"),
-        to: |_, p| targets_only_active(p).then(|| desc("null")),
-    },
+    // Merge Down stays unmapped: on a group it merges into the layer below, which Merge Layers
+    // (one `Mrg2` for both) would replay as an in-place group merge.
+    ev!("Mrg2", "mergeLayersNew", "Merge Layers", "layer.mergeLayers", &[]),
     ev!("CpTL", "copyToLayer", "Layer Via Copy", "layer.new.layerViaCopy", &[]),
     ev!("CtTL", "cutToLayer", "Layer Via Cut", "layer.new.layerViaCut", &[]),
-    // Rasterize › Type is Rasterize › Layer on a type layer; it imports back as Rasterize Layer,
-    // which rasterizes type the same way.
-    Event {
-        code: "",
-        name: "rasterizeLayer",
-        label: "Rasterize",
-        ids: &["layer.rasterize.layer", "layer.rasterize.type", "type.rasterize"],
-        from: |_| none("layer.rasterize.layer"),
-        to: |id, p| (id == "layer.rasterize.layer" || targets_only_active(p)).then(|| desc("null")),
-    },
+    // Rasterize › Type stays unmapped: Rasterize Layer, its only `.atn` form, also turns a vector
+    // mask into pixels.
+    ev!("", "rasterizeLayer", "Rasterize", "layer.rasterize.layer", &[]),
     ev!("", "selectAllLayers", "Select All Layers", "select.allLayers", &[]),
     ev!("", "selectNoLayers", "Deselect Layers", "select.deselectLayers", &[]),
     ev!("Dfrg", "defringe", "Defringe", "layer.matting.defringe", &[F("Wdth", "width", Kind::Px)]),
@@ -3182,14 +3169,14 @@ pub fn import_json(bytes: &[u8], stem: &str) -> std::result::Result<Imported, St
     if actions.is_empty() {
         return Err("the file holds no actions".into());
     }
+    // A blank name is no name: fall through to the next source rather than to the default.
+    let nonblank = |s: &str| Some(s.trim()).filter(|t| !t.is_empty()).map(str::to_string);
     let set = v
         .get("set")
         .and_then(Value::as_str)
-        .or_else(|| actions.iter().find_map(|a| a.set.as_deref()))
-        .map(str::trim)
-        .filter(|s| !s.is_empty())
-        .unwrap_or(DEFAULT_SET)
-        .to_string();
+        .and_then(nonblank)
+        .or_else(|| actions.iter().find_map(|a| a.set.as_deref().and_then(nonblank)))
+        .unwrap_or_else(|| DEFAULT_SET.to_string());
     let mut warnings = Vec::new();
     for a in &mut actions {
         a.set = Some(set.clone());

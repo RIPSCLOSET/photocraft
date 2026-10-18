@@ -357,10 +357,6 @@ fn every_mapped_command_exports_and_imports_back() {
     let mut missing: Vec<&str> = EVENTS.iter().flat_map(|e| e.ids.iter().copied()).filter(|id| !covered.contains(id)).collect();
     missing.sort_unstable();
     let allowed = [
-        // Export as a sibling's event: merge_down_rasterize_type_and_select_by_name_export.
-        "layer.mergeDown",
-        "layer.rasterize.type",
-        "type.rasterize",
         "edit.transform.flipVertical",
         "edit.transform.rotate180",
         "edit.transform.rotate90Ccw",
@@ -1081,13 +1077,10 @@ fn fractional_translation_only_transform_keeps_offset_and_interpolation() {
     assert_eq!(steps[0].1.get("interpolation"), Some(&json!("bilinear")));
 }
 
-/// Steps that save as a Photoshop event of a sibling command, and play back the same way.
+/// Select by `name` saves as Select by layer name and plays back the same way.
 #[test]
-fn merge_down_rasterize_type_and_select_by_name_export() {
+fn select_by_name_exports() {
     let cases: Vec<(&str, Value, &str, Value)> = vec![
-        ("layer.mergeDown", json!({}), "layer.mergeLayers", json!({})),
-        ("layer.rasterize.type", json!({}), "layer.rasterize.layer", json!({})),
-        ("type.rasterize", json!({}), "layer.rasterize.layer", json!({})),
         ("layer.select", json!({"name": "Glow"}), "layer.select", json!({"layer": "Glow"})),
         ("layer.select", json!({"name": "Glow", "occurrence": 0}), "layer.select", json!({"layer": "Glow"})),
     ];
@@ -1097,10 +1090,12 @@ fn merge_down_rasterize_type_and_select_by_name_export() {
         let Mapped::Steps(steps) = (e.from)(item.descriptor.as_ref().unwrap()) else { panic!("{id} did not import back") };
         assert_eq!(steps, vec![(back_id.to_string(), back.clone())], "{id}");
     }
-    // A layer picked by id or a later same-named layer has no Photoshop reference: still refused.
+    // A layer picked by id or a later same-named layer has no Photoshop reference, and Merge Down
+    // and Rasterize Type have no event that replays them exactly: all still refused.
     for (id, params) in [
-        ("layer.mergeDown", json!({"layer": 4})),
-        ("layer.rasterize.type", json!({"layer": 4})),
+        ("layer.mergeDown", json!({})),
+        ("layer.rasterize.type", json!({})),
+        ("type.rasterize", json!({})),
         ("layer.select", json!({"layer": 4})),
         ("layer.select", json!({"name": "Glow", "occurrence": 1})),
         ("layer.layerMask.revealSelection", json!({"layer": 4})),
@@ -1118,17 +1113,17 @@ fn wave_with_scale_stays_a_photoshop_step() {
 }
 
 #[test]
-fn rasterize_type_and_merge_down_play_back_from_atn() {
+fn layer_mask_and_wave_play_back_from_atn() {
     let mut s = Session::new();
     s.execute("file.new", json!({"width": 64, "height": 32, "background": "black"})).unwrap();
     s.execute("type.create", json!({"x": 4, "y": 24, "text": "Hi", "size": 20, "color": "#ffffff"})).unwrap();
     s.actions.list.push(Action::new(
         "Bake",
         vec![
-            ("layer.rasterize.type".into(), json!({})),
+            ("layer.rasterize.layer".into(), json!({})),
             ("layer.layerMask.revealAll".into(), json!({})),
             ("filter.distort.wave".into(), json!({"generators": 2, "seed": 3})),
-            ("layer.mergeDown".into(), json!({})),
+            ("layer.mergeLayers".into(), json!({})),
         ],
     ));
     let r = s.execute("actions.save", json!({"action": "Bake"})).unwrap();
@@ -1176,8 +1171,15 @@ fn load_actions_reads_photocraft_json() {
     s.execute("actions.load", json!({"data": b64(set.to_string().as_bytes())})).unwrap();
     assert_eq!(s.actions.list.iter().filter(|a| a.set.as_deref() == Some("Psycho")).count(), 2);
 
-    // Malformed JSON and an empty set are errors, not panics.
+    // A blank top-level set falls through to the actions' own set, not to the default.
+    let blank = json!({"set": "  ", "actions": [{"name": "Glow", "set": "Psycho", "steps": [["filter.blur.gaussianBlur", {"radius": 1}]]}]});
+    let r = s.execute("actions.load", json!({"data": b64(blank.to_string().as_bytes())})).unwrap();
+    assert_eq!(r["set"], "Psycho");
+
+    // Malformed JSON and an empty set are errors, not panics, and leave the list as it was.
+    let before = s.actions.list.clone();
     for bad in ["{", "[]", r#"{"actions": []}"#, r#"[1, 2]"#, r#"{"actions": [{"name": 3}]}"#] {
         assert!(s.execute("actions.load", json!({"data": b64(bad.as_bytes())})).is_err(), "{bad}");
+        assert_eq!(s.actions.list, before, "{bad} changed the actions");
     }
 }
